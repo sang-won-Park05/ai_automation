@@ -1,10 +1,25 @@
 from __future__ import annotations
 
 import argparse
-from typing import Callable
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Callable, Sequence
 
 
-def parse_args() -> argparse.Namespace:
+@dataclass(slots=True)
+class PipelineResult:
+    exit_code: int
+    message: str
+    preview_path: Path
+    sent_to_discord: bool
+    window_label: str
+
+    @property
+    def ok(self) -> bool:
+        return self.exit_code == 0
+
+
+def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Discord AI/development briefing pipeline"
     )
@@ -13,40 +28,31 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="디스코드 전송 없이 콘솔 출력과 캐시 파일만 생성합니다.",
     )
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
-def main() -> int:
-    args = parse_args()
-
-    try:
-        from app.config.settings import load_settings
-        from app.crawler.github_trending_crawler import fetch_github_trending
-        from app.crawler.hf_crawler import fetch_hf_articles
-        from app.crawler.rss_crawler import fetch_rss_articles
-        from app.processor.deduplicator import deduplicate_articles
-        from app.processor.normalize import normalize_articles
-        from app.publisher.discord_sender import (
-            format_briefing_message,
-            send_discord_message,
-        )
-        from app.ranking.news_ranker import select_briefing_items, select_main_issue
-        from app.utils.io_utils import load_articles, save_articles, save_text
-        from app.utils.logger import configure_logging
-        from app.utils.time_utils import briefing_window, format_window
-    except ModuleNotFoundError as exc:
-        print(
-            "필수 패키지가 없습니다. "
-            "먼저 `python3 -m pip install -r requirements.txt`를 실행하세요.\n"
-            f"누락 모듈: {exc.name}"
-        )
-        return 1
+def run_pipeline(*, dry_run: bool = False) -> PipelineResult:
+    from app.config.settings import load_settings
+    from app.crawler.github_trending_crawler import fetch_github_trending
+    from app.crawler.hf_crawler import fetch_hf_articles
+    from app.crawler.rss_crawler import fetch_rss_articles
+    from app.processor.deduplicator import deduplicate_articles
+    from app.processor.normalize import normalize_articles
+    from app.publisher.discord_sender import (
+        format_briefing_message,
+        send_discord_message,
+    )
+    from app.ranking.news_ranker import select_briefing_items, select_main_issue
+    from app.utils.io_utils import load_articles, save_articles, save_text
+    from app.utils.logger import configure_logging
+    from app.utils.time_utils import briefing_window, format_window
 
     settings = load_settings()
     logger = configure_logging()
 
     window_start, window_end = briefing_window()
-    logger.info("브리핑 대상 구간(KST): %s", format_window(window_start, window_end))
+    window_label = format_window(window_start, window_end)
+    logger.info("브리핑 대상 구간(KST): %s", window_label)
 
     def collect_source(
         name: str,
@@ -131,22 +137,56 @@ def main() -> int:
     print(message)
     print()
 
-    if args.dry_run:
+    if dry_run:
         logger.info("--dry-run 활성화: 디스코드 전송을 건너뜁니다.")
-        return 0
+        return PipelineResult(
+            exit_code=0,
+            message=message,
+            preview_path=preview_path,
+            sent_to_discord=False,
+            window_label=window_label,
+        )
 
     if not settings.discord_webhook_url:
         logger.warning(
             "DISCORD_WEBHOOK_URL이 없어 콘솔/파일 미리보기만 수행했습니다."
         )
-        return 0
+        return PipelineResult(
+            exit_code=0,
+            message=message,
+            preview_path=preview_path,
+            sent_to_discord=False,
+            window_label=window_label,
+        )
 
     success = send_discord_message(
         webhook_url=settings.discord_webhook_url,
         message=message,
         timeout=settings.request_timeout,
     )
-    return 0 if success else 1
+    return PipelineResult(
+        exit_code=0 if success else 1,
+        message=message,
+        preview_path=preview_path,
+        sent_to_discord=success,
+        window_label=window_label,
+    )
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    args = parse_args(argv)
+
+    try:
+        result = run_pipeline(dry_run=args.dry_run)
+    except ModuleNotFoundError as exc:
+        print(
+            "필수 패키지가 없습니다. "
+            "먼저 `python3 -m pip install -r requirements.txt`를 실행하세요.\n"
+            f"누락 모듈: {exc.name}"
+        )
+        return 1
+
+    return result.exit_code
 
 
 if __name__ == "__main__":

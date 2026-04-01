@@ -49,11 +49,21 @@ class Settings:
     output_dir: Path = Path("data/raw")
 
 
+def default_output_dir() -> Path:
+    if os.getenv("OUTPUT_DIR"):
+        return Path(os.environ["OUTPUT_DIR"])
+
+    if os.getenv("VERCEL"):
+        return Path("/tmp/data/raw")
+
+    return Path("data/raw")
+
+
 def load_settings() -> Settings:
     load_env_file()
 
     rss_feeds = split_env_list(os.getenv("RSS_FEEDS")) or list(DEFAULT_RSS_FEEDS)
-    output_dir = Path(os.getenv("OUTPUT_DIR", "data/raw"))
+    output_dir = default_output_dir()
     output_dir.mkdir(parents=True, exist_ok=True)
 
     return Settings(
